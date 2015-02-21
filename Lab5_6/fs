@@ -1,0 +1,313 @@
+require "digest/sha1"
+
+### MODEL CLASSES###
+### THIS IS THE BASE CLASS FOR ITEMS ###
+class RbItem
+	def initialize name, parentdir, permissions
+		@name = name
+		@parentdir = parentdir
+		@permissions = validate_permissions permissions
+		@hash = Digest::SHA1.hexdigest @name + @parentdir
+	end
+	def name
+		@name
+	end
+	def parentdir
+		@parentdir
+	end
+	def permissions
+		@permissions
+	end
+	def hash
+		@hash
+	end
+	def read
+		@read
+	end
+	def write
+		@write
+	end
+	def execute
+		@execute
+	end
+
+	### HELPER FUNCTION FOR VALIDATIN PERMISSIONS (I ACTUALLY STORE THEM AS BOOLEANS) ###
+	def validate_permissions permissions
+		if permissions.length == 3
+			permissions.split("").each do |char|
+				if char == "r"
+					@read = true
+				elsif char == "w"
+					@write = true
+				elsif char == "x"
+					@execute = true
+				elsif char != "-"
+					raise "Invalid Permissions"
+				end
+			end
+			return permissions
+		end
+		raise "Wrong Number of Permissions"
+	end
+end
+
+
+### ALLOWED SIZES IS USED TO VALIDATE INPUT ###
+ALLOWED_SIZES = ["Small", "Medium", "Large"]
+
+### IMPLEMENTATION OF ITEM TO CREATE A FILE CLASS ###
+class RbFile < RbItem
+	def initialize name, parentdir, permissions, size
+		raise "Invalid Size" unless ALLOWED_SIZES.include? size.capitalize ### I USE EXCEPTIONS TO SIGNAL ERRORS ###
+		super name, parentdir, permissions
+		@size = size.capitalize
+	end
+	def size
+		@size
+	end
+
+	### PRINT WILL BE CALLED BY THIS ITEMS PARENTDIR ###
+	def print
+		if @parentdir == "/"
+			puts "  " + @name
+		else
+			puts "    " + @name
+		end
+	end
+end
+
+
+### IMPLEMENTATION OF ITEM TO CREATE A DIRECTORY CLASS ###
+class RbDirectory < RbItem
+	def initialize name, parentdir, permissions
+		super(name, parentdir, permissions)
+		update
+		@children = [] ### KEEPING REFERENCES TO ALL CHILDREN ITEMS OF A DIR FOR PRINTING
+	end
+	def last_updated
+		@last_updated
+	end
+	def children
+		@children
+	end
+
+	### PRINT WILL BE CALLED BY FILE SYSTEM ###
+	def print
+		if @name.start_with? "/"
+			puts @name
+		else
+			puts "  " + @name + "/"
+		end
+		@children.sort_by {|child| child.name}.each do |child|
+			child.print
+		end
+	end
+
+	### HELPER FUNCTION FOR KEEPING LAST_UPDATED UP TO DATE ###
+	def update
+		@last_updated = Time.now
+	end
+end
+
+### IMPLEMENTATION OF ITEM TO CREATE LINK CLASS ###
+class RbLink < RbItem
+	def initialize name, parentdir, permissions, filename
+		super(name, parentdir, permissions)
+		@filename = filename
+	end
+	def filename
+		@filename
+	end
+
+	### PRINT WILL BE CALLED BY DIR CLASS ###
+	def print
+		if @parentdir == '/'
+			puts "  " + @name
+		else
+			puts "    " + @name
+		end
+	end
+end
+
+### CONTROLLER CLASS ###
+### THIS IS THE DATA STRUCTURE I USE TO STORE AND MODIFY MY SYSTEM ###
+class FileSystem
+	def initialize
+		@data = Hash.new
+		@dirs = Hash.new
+		### TOOK A SLIGHTLY DIFFERENT APPROACH THAN YOU FOR ROOT. THIS WAY I CAN ADD FILES TO ROOT DIR ###
+		@dirs['/'] = RbDirectory.new('/', '/', 'rwx')
+	end
+	def data
+		@data
+	end
+	def dirs
+		@dirs
+	end
+
+	### HELPER FUNCTION FOR INSERTING AN ITEM INTO THE FILESYSTEM ###
+	def insert item
+		validate item
+		if item.is_a? RbDirectory
+			@dirs[item.name] = item
+		else
+			@dirs[item.parentdir].children.push item
+		end
+		@data[item.hash] = item
+		@dirs[item.parentdir].update ### KEEPING DIRECTORY UP TO DATE
+	end
+
+	### HELPER FUNCTIONS FOR REMOVING ITEMS FROM FILE SYSTEM ###
+	def remove name, parent
+		item = @data[Digest::SHA1.hexdigest name + parent]
+		@dirs[item.parentdir].children.delete item
+		@dirs[item.parentdir].update ### KEEPING DIRECTORY UP TO DATE
+		@data.delete(item.hash)
+		if item.is_a? RbDirectory
+			### NOTICE THAT I DELETE ALL CHILDREN IF A DIRECTORY IS REMOVED ###
+			@dirs[item.name].children.each do |child|
+				@data.delete Digest::SHA1.hexdigest child.filename + child.parentdir
+			end
+			@dirs.delete item.name
+		end
+	end
+
+	### HELPER FUNCTION FOR VALIDATION OF ITEMS BEFORE INSERTION ###
+	def validate item
+		raise "Item Exists" if @data.has_key? item.hash
+		if item.is_a? RbFile
+			raise "Bad Parent Directory For File" unless @dirs.has_key? item.parentdir
+		elsif item.is_a? RbLink
+			raise "Bad Parent Directory For Link" unless @dirs.has_key? item.parentdir or item.parentdir == "/"
+			raise "Bad File Name For Link" unless @data.has_key? Digest::SHA1.hexdigest item.filename + item.parentdir
+		end
+	end
+
+	### PRINTS EACH DIR ###
+	def print
+		@dirs.sort_by { |name, dir| [dir.name] }.each do |name, directory|
+			directory.print
+		end
+	end
+end
+
+### VIEW CLASS ###
+### THIS CLASS GIVES THE USER AN INTERFACE INTO THE FILESYSTEM CLASS ###
+class CLI
+	def initialize
+		@fs = FileSystem.new
+	end
+	def fs
+		@fs
+	end
+
+	### ONE LINE PUTS GETS ###
+	def prompt(*args)
+	    print(*args)
+	    gets
+	end
+
+	### USED FOR COLLECTING THE DATA NEEDED FOR ALL ITEMS ###
+	def item_prompt
+		name = prompt("Please Enter A File Name ").chomp
+		if name == "quit"
+			return nil
+		end
+		parentdir = prompt("Please Enter A Parent Directory ").chomp
+		if name == "quit"
+			return nil
+		end
+		permissions = prompt("Please Enter Permissions ").chomp
+		if permissions == "quit"
+			return nil
+		end
+		return RbItem.new name, parentdir, permissions
+	end 
+
+	### USED FOR CREATING FILES ###
+	def file_create_prompt
+		item = item_prompt ### NOTICE HOW USEFUL ITEM_PROMPT IS
+		if item == nil
+			return nil
+		end
+		size = prompt("What size file? Small/Medium/Large ").chomp
+		if size == "quit"
+			return nil
+		end
+		puts "\n"
+		return RbFile.new item.name, item.parentdir, item.permissions, size
+	end
+
+	### USED FOR CREATING DIRECTORIES ###
+	def dir_create_prompt
+		item = item_prompt
+		if item == nil
+			return nil
+		end
+		puts "\n"
+		return RbDirectory.new item.name, item.parentdir, item.permissions
+	end
+
+	### USED FOR CREATING LINKS ###
+	def link_create_prompt
+		item = item_prompt
+		if item == nil
+			return nil
+		end
+		filename = prompt("please enter a filename ").chomp
+		if filename == "quit"
+			return nil
+		end
+		puts "\n"
+		return RbLink.new item.name, item.parentdir, item.permissions, filename
+	end
+
+	### USED FOR REMOVING ITEMS ###
+	def remove_prompt
+		name = prompt("what is the name of the object you want to delete? ").chomp
+		if name == "quit"
+			return nil
+		end
+		root = prompt("what is the parent dir of the object you want to delete? ").chomp
+		if root == "quit"
+			return nil
+		end
+		@fs.remove name, root
+		puts "\n"
+	end
+
+	### FUNCTION THAT STARTS UI ###
+	def run
+		done = false
+		options = ["Create a File", "Create a Directory", "Create a Link",
+		 "Remove a File/Directory/Link", "Display File System","Exit"]
+		until done do
+			options.each_with_index do |option, i|
+				puts "#{i+1}. #{option}"	### PRINTING OPTIONS
+			end
+			begin
+				case gets.chomp ### USER INPUT
+				when "1"
+					rbfile = file_create_prompt
+					@fs.insert rbfile unless rbfile == nil ### INSERT FILE
+				when "2"
+					dir = dir_create_prompt
+					@fs.insert dir unless dir == nil### INSERT DIR
+				when "3"
+					link = link_create_prompt
+					@fs.insert link unless link == nil ### INSERT LINK
+				when "4"
+					remove_prompt	### REMOVE ITEM
+				when "5"
+					@fs.print 	### PRINT FILE SYSTEM
+				when "6", "quit"
+					done = true	### EXIT PROGRAM
+				end
+			rescue
+				puts $!	### IF AND EXCEPTION IS THROWN I PRINT IT'S MESSAGE
+			end
+		end
+	end
+end
+
+CLI.new.run ### START UI
